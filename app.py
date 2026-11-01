@@ -107,7 +107,7 @@ tab_agent, tab1, tab_route, tab_bayes, tab2, tab3 = st.tabs([
 # ================================================================ AGENT TAB
 with tab_agent:
     st.subheader("Run the MediAI agent on a patient")
-    st.write("The agent **perceives** the symptoms, **reasons** (rules, neural network, Bayes), "
+    st.write("The agent **perceives** the symptoms, **reasons** (rules, neural network, Bayes), " 
              "then **acts**: it dispatches an ambulance along an A* route and builds a "
              "rescue plan if the patient is RED.")
 
