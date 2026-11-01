@@ -45,7 +45,7 @@ def get_comparison():
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     plt.close(fig)
-    return buf.getvalue(), results
+    return buf.getvalue(), results 
 
 
 bundle = load_bundle()
