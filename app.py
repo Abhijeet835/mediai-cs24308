@@ -381,15 +381,21 @@ with tab_bayes:
     st.write("Start from the population rate (%.1f%% diabetic). Choose what you know about a "
              "patient. Each finding multiplies the odds by its likelihood ratio "
              "P(finding | diabetic) / P(finding | healthy)." % (base_rate * 100))
+    DEFAULT_BAYES = {"High blood pressure": "Present", "BMI 30 or more (obese)": "Present",
+                     "Age 60 or older": "Present", "Poor general health": "Present",
+                     "Difficulty walking": "Absent"}
+    OPTIONS = ["Unknown", "Present", "Absent"]
     cols = st.columns(3)
     findings = {}
     for i, name in enumerate(agent.EVIDENCE):
         with cols[i % 3]:
-            choice = st.radio(name, ["Unknown", "Present", "Absent"], horizontal=True,
-                              key="bayes_" + name)
+            choice = st.radio(name, OPTIONS, horizontal=True, key="bayes_" + name,
+                              index=OPTIONS.index(DEFAULT_BAYES.get(name, "Unknown")))
         if choice != "Unknown":
             findings[name] = choice == "Present"
 
+    if not findings:
+        st.info("Choose Present or Absent for at least one finding to see the belief change.")
     steps = agent.bayes_update(base_rate, findings)
     fig, ax = plt.subplots(figsize=(10, 4))
     xs = list(range(len(steps)))
@@ -398,6 +404,7 @@ with tab_bayes:
     for x, y in zip(xs, ys):
         ax.annotate("%.0f%%" % y, (x, y), textcoords="offset points", xytext=(0, 9),
                     ha="center", fontweight="bold")
+    ax.set_xlim(-0.5, len(xs) - 0.5)
     ax.set_xticks(xs)
     ax.set_xticklabels([s[0].replace(" (", "\n(").replace(" ", "\n", 1) if len(s[0]) > 14
                         else s[0] for s in steps], fontsize=8)
