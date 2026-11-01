@@ -1,3 +1,4 @@
+import io
 import os
 
 import joblib
@@ -39,7 +40,12 @@ def get_city():
 
 @st.cache_resource
 def get_comparison():
-    return agent.compare_searches(get_city())
+    """Cache the finished PNG image (not the figure) so threads never share a figure."""
+    fig, results = agent.compare_searches(get_city())
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return buf.getvalue(), results
 
 
 bundle = load_bundle()
@@ -135,8 +141,7 @@ with tab_agent:
     st.write("**Quick demo patients** (click one to fill the form):")
     pcols = st.columns(4)
     for col, pname in zip(pcols, PRESETS):
-        col.button(pname, key="btn_" + pname, on_click=load_preset, args=(pname,),
-                   use_container_width=True)
+        col.button(pname, key="btn_" + pname, on_click=load_preset, args=(pname,))
 
     f1, f2, f3 = st.columns(3)
     with f1:
@@ -164,7 +169,7 @@ with tab_agent:
             st.caption("Green dot = ambulance base, red + = hospital, "
                        "blue star = patient. Orange = traffic jam.")
 
-    if st.button("🚑 Run MediAI agent", type="primary", use_container_width=True):
+    if st.button("🚑 Run MediAI agent", type="primary"):
         age_idx = AGE.index(st.session_state.m_age)
         gen_idx = HEALTH.index(st.session_state.m_gen) + 1
         bmi_v = st.session_state.m_bmi
@@ -354,7 +359,7 @@ with tab_route:
     st.write("The city is a 20x20 grid. Black cells are blocked roads, orange cells are traffic "
              "(3 minutes per cell instead of 1). The ambulance leaves the green base and must "
              "reach the red hospital. Three search algorithms solve the same problem:")
-    fig, results = get_comparison()
+    png, results = get_comparison()
     a, b, c = st.columns(3)
     a.metric("BFS (uninformed)", "%d min" % results["BFS"]["minutes"],
              "%d cells explored" % results["BFS"]["explored"], delta_color="off")
@@ -362,7 +367,7 @@ with tab_route:
              "%d cells explored" % results["Greedy"]["explored"], delta_color="off")
     c.metric("A* (best)", "%d min" % results["A*"]["minutes"],
              "%d cells explored" % results["A*"]["explored"], delta_color="off")
-    st.pyplot(fig)
+    st.image(png)
     st.info(
         "**BFS** ignores traffic, so it is slow on the road and explores almost everything. "
         "**Greedy** searches very little but can pick a slower road because it only looks at the "
