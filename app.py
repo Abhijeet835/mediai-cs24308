@@ -84,7 +84,7 @@ def card(title, text, colour):
 with st.sidebar:
     st.header("🩺 MediAI")
     st.write("An intelligent medical-emergency agent that combines search, logic, "
-             "probabilistic reasoning, planning and learning.")
+             "probabilistic reasoning, planning and learning.") 
     st.markdown("**CS24308 Artificial Intelligence Lab**  \nSession MO-26")
     st.divider()
     st.markdown("**Syllabus modules used**")
