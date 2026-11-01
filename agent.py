@@ -4,7 +4,7 @@ MediAI agent: AI modules for the CS24308 project.
 Module II  : Search (BFS, Greedy, A*) for ambulance routing
 Module III : Knowledge representation + forward chaining for triage
 Module IV  : Bayesian reasoning + goal-stack planning
-Module V   : Learning (neural network, loaded in app.py)
+Module V   : Learning (neural network, loaded in app.py) 
 """
 import heapq
 from collections import deque
