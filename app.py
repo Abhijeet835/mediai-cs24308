@@ -8,7 +8,7 @@ import streamlit as st
 
 import agent
 
-st.set_page_config(page_title="MediAI", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="MediAI", page_icon="🩺", layout="wide") 
 
 st.markdown(
     """
