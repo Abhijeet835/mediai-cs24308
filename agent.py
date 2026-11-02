@@ -4,12 +4,13 @@ MediAI agent: AI modules for the CS24308 project.
 Module II  : Search (BFS, Greedy, A*) for ambulance routing
 Module III : Knowledge representation + forward chaining for triage
 Module IV  : Bayesian reasoning + goal-stack planning
-Module V   : Learning (neural network, loaded in app.py) 
+Module V   : Learning (neural network, loaded in app.py)
 """
 import heapq
 from collections import deque
 
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -24,12 +25,20 @@ COST = {FREE: 1, TRAFFIC: 3}          # minutes to drive through one cell
 BASE = (1, 1)                         # ambulance base (row, col)
 HOSPITAL = (18, 18)                   # hospital (row, col)
 
-# named places where the patient can be
+# named places where the patient can be (row, col)
 PATIENT_SPOTS = {
     "Near the hospital (south-east)": (15, 16),
     "City centre (heavy traffic)": (9, 9),
     "West side": (14, 3),
     "North-east": (3, 17),
+    "School (near the base)": (3, 3),
+    "College campus (north-west)": (5, 3),
+    "Bus stand (north)": (2, 10),
+    "Highway toll (far north)": (1, 13),
+    "Market (traffic zone)": (11, 10),
+    "Industrial area (east)": (10, 17),
+    "Railway station (south-west)": (17, 5),
+    "Stadium (south)": (18, 10),
 }
 
 
@@ -190,6 +199,78 @@ def compare_searches(grid):
     return fig, results
 
 
+# ---- NEW: compare the three algorithms on every patient location ----
+def analyse_locations(grid):
+    """Run BFS, Greedy and A* from the base to every patient location,
+    plus A* from the patient to the hospital. Returns a table (DataFrame)."""
+    nz = lambda v: np.nan if v is None else v
+    rows = []
+    for i, (name, cell) in enumerate(PATIENT_SPOTS.items(), 1):
+        p = nearest_free(grid, cell)
+        rec = {"No.": i, "Location": name}
+        for alg, fn in ALGOS.items():
+            _, explored, minutes = fn(grid, BASE, p)
+            rec[alg + " min"] = nz(minutes)
+            rec[alg + " cells"] = len(explored)
+        _, _, to_h = astar(grid, p, HOSPITAL)
+        rec["To hospital min"] = nz(to_h)
+        rec["Total ETA (A*)"] = rec["A* min"] + rec["To hospital min"]
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def locations_map(grid):
+    """City map with every possible patient location numbered."""
+    fig, ax = plt.subplots(figsize=(6, 6))
+    draw_city(ax, grid, title="Possible patient locations (numbers match the table)")
+    for i, (name, cell) in enumerate(PATIENT_SPOTS.items(), 1):
+        r, c = nearest_free(grid, cell)
+        ax.scatter([c], [r], s=230, color="royalblue", edgecolor="white", zorder=6)
+        ax.text(c, r, str(i), color="white", ha="center", va="center",
+                fontsize=8, fontweight="bold", zorder=7)
+    fig.tight_layout()
+    return fig
+
+
+def locations_charts(df):
+    """Three charts comparing the algorithms across all locations."""
+    x = np.arange(len(df))
+    w = 0.27
+    fig = plt.figure(figsize=(13, 8.5))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15])
+
+    ax1 = fig.add_subplot(gs[0, :])
+    ax1.bar(x - w, df["BFS min"], w, label="BFS", color="#4cc9f0")
+    ax1.bar(x, df["Greedy min"], w, label="Greedy", color="#f4a261")
+    ax1.bar(x + w, df["A* min"], w, label="A*", color="#2a9d8f")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(df["No."])
+    ax1.set_xlabel("Patient location number")
+    ax1.set_ylabel("Minutes, base to patient")
+    ax1.set_title("Travel time to each patient: A* is never slower than BFS or Greedy")
+    ax1.legend()
+
+    ax2 = fig.add_subplot(gs[1, 0])
+    d = df.sort_values("Total ETA (A*)")
+    ax2.barh(d["Location"], d["A* min"], color="#2a9d8f", label="Base to patient")
+    ax2.barh(d["Location"], d["To hospital min"], left=d["A* min"], color="#e63946",
+             label="Patient to hospital")
+    ax2.set_xlabel("Minutes (A* route)")
+    ax2.set_title("Total ambulance time per location")
+    ax2.tick_params(axis="y", labelsize=8)
+    ax2.legend(fontsize=8, loc="lower right")
+
+    ax3 = fig.add_subplot(gs[1, 1])
+    for alg, col in (("BFS", "#4cc9f0"), ("Greedy", "#f4a261"), ("A*", "#2a9d8f")):
+        ax3.plot(df["No."], df[alg + " cells"], "o-", label=alg, color=col)
+    ax3.set_xlabel("Patient location number")
+    ax3.set_ylabel("Cells explored")
+    ax3.set_title("Search effort (fewer = less work)")
+    ax3.legend(fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
 # =====================================================================
 # MODULE III: KNOWLEDGE REPRESENTATION + FORWARD CHAINING
 # =====================================================================
@@ -206,12 +287,12 @@ RULES = [
     ("R9",  ["fever", "joint_pain", "rash"], "suspect_dengue"),
     ("R10", ["suspect_dengue"], "needs_urgent_checkup"),
     ("R11", ["breathing_difficulty"], "needs_urgent_checkup"),
-    ("R13", ["cardiac_emergency"], "CRITICAL"),
-    ("R14", ["stroke_emergency"], "CRITICAL"),
-    ("R15", ["life_threatening"], "CRITICAL"),
-    ("R16", ["needs_urgent_checkup"], "URGENT"),
-    ("R17", ["fever"], "ROUTINE"),
-    ("R18", ["cough"], "ROUTINE"),
+    ("R12", ["cardiac_emergency"], "CRITICAL"),
+    ("R13", ["stroke_emergency"], "CRITICAL"),
+    ("R14", ["life_threatening"], "CRITICAL"),
+    ("R15", ["needs_urgent_checkup"], "URGENT"),
+    ("R16", ["fever"], "ROUTINE"),
+    ("R17", ["cough"], "ROUTINE"),
 ]
 
 SYMPTOMS = {
@@ -322,7 +403,8 @@ def goal_stack_plan(goal="under_treatment"):
 # =====================================================================
 def run_mission(name, age_over_50, symptoms, bayes_findings, nn_risk, base_rate,
                 patient_spot, grid):
-    """Run the full MediAI agent. Returns a dict with everything to display."""
+    """Run the full MediAI agent. patient_spot is either the name of a place
+    in PATIENT_SPOTS or a (row, col) tuple. Returns a dict to display."""
     out = {"name": name}
 
     # 1. perceive + reason: triage by forward chaining
@@ -344,7 +426,8 @@ def run_mission(name, age_over_50, symptoms, bayes_findings, nn_risk, base_rate,
     # 3. act: dispatch ambulance only for RED
     out["dispatch"] = colour_name == "RED"
     out["route"] = None
-    patient = nearest_free(grid, PATIENT_SPOTS[patient_spot])
+    spot_cell = PATIENT_SPOTS[patient_spot] if isinstance(patient_spot, str) else tuple(patient_spot)
+    patient = nearest_free(grid, spot_cell)
     out["patient"] = patient
     if out["dispatch"]:
         p1, e1, t1 = astar(grid, BASE, patient)
@@ -381,36 +464,3 @@ def mission_figure(res, grid):
     fig.suptitle("MediAI: %s" % res["name"], fontweight="bold")
     fig.tight_layout()
     return fig
-
-
-def mission_report(res):
-    L = ["=" * 62, "MEDIAI MISSION REPORT: %s" % res["name"], "=" * 62, ""]
-    L.append("[1] TRIAGE by forward chaining (Module III)")
-    L.append("    Known facts: %s" % ", ".join(res["facts"]) if res["facts"] else "    Known facts: none")
-    for rid, conds, concl in res["fired"]:
-        L.append("    %-4s IF %s THEN %s" % (rid, " AND ".join(conds), concl))
-    L.append("    RESULT: %s (%s)" % (res["triage"], res["advice"]))
-    L.append("")
-    L.append("[2] DIABETES RISK by neural network (Module V): %.0f%%  (average person: %.0f%%)"
-             % (res["nn_risk"] * 100, res["base_rate"] * 100))
-    L.append("[3] DIABETES RISK by Bayes' theorem (Module IV): %.0f%%" % (res["bayes_risk"] * 100))
-    L.append("")
-    if res["dispatch"]:
-        r = res["route"]
-        L.append("[4] AMBULANCE DISPATCHED. A* route (Module II): %d min "
-                 "(%d to patient + %d to hospital)" % (r["minutes"], r["to_patient"], r["to_hospital"]))
-        L.append("")
-        L.append("[5] GOAL-STACK PLAN (Module IV)")
-        for t in res["plan_trace"]:
-            L.append("    " + t)
-    else:
-        L.append("[4] No ambulance needed. Advice: %s" % res["advice"])
-        L.append("")
-        L.append("[5] PLAN")
-    L.append("")
-    L.append("    FINAL PLAN:")
-    for i, s in enumerate(res["plan"], 1):
-        L.append("      %d. %s" % (i, s))
-    L.append("")
-    L.append("Educational project. Not medical advice.")
-    return "\n".join(L)
