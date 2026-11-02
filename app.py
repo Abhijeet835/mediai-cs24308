@@ -3,12 +3,13 @@ import os
 
 import joblib
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 import agent
 
-st.set_page_config(page_title="MediAI", page_icon="🩺", layout="wide") 
+st.set_page_config(page_title="MediAI", page_icon="🩺", layout="wide")
 
 st.markdown(
     """
@@ -21,6 +22,7 @@ st.markdown(
     .card { padding: 18px 22px; border-radius: 12px; margin: 8px 0 14px 0; }
     .card h2 { margin: 0; }
     .card p { margin: 2px 0 0 0; opacity: 0.9; }
+    footer { visibility: hidden; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -45,7 +47,20 @@ def get_comparison():
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
     plt.close(fig)
-    return buf.getvalue(), results 
+    return buf.getvalue(), results
+
+
+@st.cache_resource
+def get_location_analysis():
+    """Run the three search algorithms on every patient location (cached)."""
+    df = agent.analyse_locations(get_city())
+    images = []
+    for f in (agent.locations_map(get_city()), agent.locations_charts(df)):
+        buf = io.BytesIO()
+        f.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+        plt.close(f)
+        images.append(buf.getvalue())
+    return images[0], images[1], df
 
 
 bundle = load_bundle()
@@ -58,19 +73,80 @@ grid = get_city()
 AGE = ["18-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54",
        "55-59", "60-64", "65-69", "70-74", "75-79", "80 or older"]
 HEALTH = ["1 - Excellent", "2 - Very good", "3 - Good", "4 - Fair", "5 - Poor"]
-EDU = ["Never attended / kindergarten", "Grades 1-8", "Grades 9-11",
-       "Grade 12 / GED", "College 1-3 years", "College 4+ years"]
-INCOME = ["Below 10k", "10k-15k", "15k-20k", "20k-25k",
-          "25k-35k", "35k-50k", "50k-75k", "75k or more"]
+CUSTOM = "Custom (choose row and column)"
+
+
+def risk_many(rows):
+    """Neural-network risk for many patients at once, corrected from the 50/50
+    training sample back to the real-world rate with Bayes' theorem."""
+    X = pd.DataFrame(rows)[features]
+    p = model.predict_proba(scaler.transform(X))[:, 1]
+    return (p * base_rate) / (p * base_rate + (1 - p) * (1 - base_rate))
 
 
 def real_risk(vals):
-    """Neural network score, then Bayes correction from 50/50 training data
-    back to the real-world prevalence."""
+    """Raw neural-network score and the corrected real-world risk for one patient."""
     row = pd.DataFrame([vals])[features]
     p_model = model.predict_proba(scaler.transform(row))[0, 1]
     p_real = (p_model * base_rate) / (p_model * base_rate + (1 - p_model) * (1 - base_rate))
     return p_model, p_real
+
+
+def base_vals(**kw):
+    """A default patient: every answer set to a neutral value, then overridden."""
+    v = {"HighBP": 0, "HighChol": 0, "CholCheck": 1, "BMI": 25, "Smoker": 0, "Stroke": 0,
+         "HeartDiseaseorAttack": 0, "PhysActivity": 1, "Fruits": 1, "Veggies": 1,
+         "HvyAlcoholConsump": 0, "AnyHealthcare": 1, "NoDocbcCost": 0, "GenHlth": 3,
+         "MentHlth": 0, "PhysHlth": 0, "DiffWalk": 0, "Sex": 0, "Age": 8,
+         "Education": 4, "Income": 5}
+    v.update(kw)
+    return v
+
+
+def risk_sweeps(age_idx, bmi, gen_idx, highbp):
+    """Three charts showing how the neural network's risk responds to its inputs."""
+    ref = base_vals(Age=age_idx + 1, BMI=bmi, GenHlth=gen_idx, HighBP=int(highbp))
+    bmis = list(range(15, 51))
+    factors = {"High blood pressure": {"HighBP": 1}, "High cholesterol": {"HighChol": 1},
+               "Difficulty walking": {"DiffWalk": 1}, "Heart disease": {"HeartDiseaseorAttack": 1},
+               "Stroke": {"Stroke": 1}, "Smoker": {"Smoker": 1},
+               "No physical activity": {"PhysActivity": 0}}
+    rows = ([{**ref, "BMI": b} for b in bmis]
+            + [{**ref, "Age": i + 1} for i in range(len(AGE))]
+            + [{**ref, **v} for v in factors.values()]
+            + [ref])
+    risk = risk_many(rows) * 100            # one prediction call for all scenarios
+    r_bmi = risk[:len(bmis)]
+    r_age = risk[len(bmis):len(bmis) + len(AGE)]
+    r_fac = risk[len(bmis) + len(AGE):-1]
+    here = risk[-1]
+    delta = dict(zip(factors, r_fac - here))
+
+    fig, (a1, a2, a3) = plt.subplots(1, 3, figsize=(15, 4))
+    a1.plot(bmis, r_bmi, color="crimson", lw=2.5)
+    a1.axhline(base_rate * 100, color="grey", ls="--", label="Average person")
+    a1.axvline(bmi, color="teal", ls=":", label="This patient")
+    a1.set_xlabel("BMI")
+    a1.set_ylabel("Estimated diabetes risk (%)")
+    a1.set_title("Risk vs BMI")
+    a1.legend(fontsize=8)
+
+    a2.bar(range(len(AGE)), r_age,
+           color=["teal" if i == age_idx else "#9bb" for i in range(len(AGE))])
+    a2.axhline(base_rate * 100, color="grey", ls="--")
+    a2.set_xticks(range(len(AGE)))
+    a2.set_xticklabels(AGE, rotation=60, ha="right", fontsize=8)
+    a2.set_ylabel("Estimated diabetes risk (%)")
+    a2.set_title("Risk vs age group")
+
+    order = sorted(delta, key=delta.get)
+    a3.barh(order, [delta[k] for k in order],
+            color=["crimson" if delta[k] > 0 else "teal" for k in order])
+    a3.axvline(0, color="black", lw=0.8)
+    a3.set_xlabel("Change in risk (percentage points)")
+    a3.set_title("What the model reacts to (same patient)")
+    fig.tight_layout()
+    return fig
 
 
 def card(title, text, colour):
@@ -82,32 +158,29 @@ def card(title, text, colour):
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.header("🩺 MediAI")
-    st.write("An intelligent medical-emergency agent that combines search, logic, "
-             "probabilistic reasoning, planning and learning.") 
+    st.header("MediAI")
     st.markdown("**CS24308 Artificial Intelligence Lab**  \nSession MO-26")
+    st.markdown("**Modules used**")
+    st.markdown("- I: Intelligent agent\n"
+                "- II: A*, Greedy, BFS search\n"
+                "- III: Forward-chaining rules\n"
+                "- IV: Bayes, goal-stack planning\n"
+                "- V: Neural network")
     st.divider()
-    st.markdown("**Syllabus modules used**")
-    st.markdown(
-        "- Module I: Intelligent agent (perceive, reason, act)\n"
-        "- Module II: A*, Greedy, BFS search\n"
-        "- Module III: Forward chaining rules\n"
-        "- Module IV: Bayes + goal-stack planning\n"
-        "- Module V: Neural network learning")
-    st.divider()
-    st.caption("Educational project. Not medical advice.")
+    st.caption("Abhijeet Gorai, Nilesh Kumar, Yash Raj  \n"
+               "Guide: Dr. Satish Chander  \n"
+               "Educational project, not medical advice.")
 
-st.title("🩺 MediAI: Intelligent Medical Emergency Agent")
+st.title("MediAI: Intelligent Medical Emergency Agent")
 st.caption("CS24308 Artificial Intelligence Lab | Educational project, not medical advice")
 
-tab_agent, tab1, tab_route, tab_bayes, tab2, tab3 = st.tabs([
-    "🚑 Agent mission", "Risk checker", "🗺️ Ambulance routing",
-    "🧮 Bayes reasoning", "Model performance", "About the team"])
+tab_agent, tab_route, tab_bayes, tab_nn = st.tabs([
+    "Agent mission", "Search: ambulance routing", "Bayes reasoning", "Neural network"])
 
-# ================================================================ AGENT TAB
+# ================================================================ TAB: agent mission
 with tab_agent:
     st.subheader("Run the MediAI agent on a patient")
-    st.write("The agent **perceives** the symptoms, **reasons** (rules, neural network, Bayes), " 
+    st.write("The agent **perceives** the symptoms, **reasons** (rules, neural network, Bayes), "
              "then **acts**: it dispatches an ambulance along an A* route and builds a "
              "rescue plan if the patient is RED.")
 
@@ -165,26 +238,26 @@ with tab_agent:
         with st.container(border=True):
             st.markdown("**Where is the patient?**")
             st.selectbox("Patient location on the city map",
-                         list(agent.PATIENT_SPOTS), key="m_spot")
+                         list(agent.PATIENT_SPOTS) + [CUSTOM], key="m_spot")
+            if st.session_state.m_spot == CUSTOM:
+                st.slider("Row (0 = top)", 0, 19, 10, key="m_row")
+                st.slider("Column (0 = left)", 0, 19, 10, key="m_col")
             st.caption("Green dot = ambulance base, red + = hospital, "
                        "blue star = patient. Orange = traffic jam.")
 
-    if st.button("🚑 Run MediAI agent", type="primary"):
+    st.caption("Only the fields above are asked. The other 14 health-form answers "
+               "(smoking, exercise, diet and so on) use fixed default values.")
+
+    if st.button("Run MediAI agent", type="primary"):
         age_idx = AGE.index(st.session_state.m_age)
         gen_idx = HEALTH.index(st.session_state.m_gen) + 1
         bmi_v = st.session_state.m_bmi
 
         # perceive: build the 21 features the neural network needs
-        vals = {
-            "HighBP": int(st.session_state.m_highbp), "HighChol": int(st.session_state.m_highchol),
-            "CholCheck": 1, "BMI": bmi_v, "Smoker": 0, "Stroke": 0,
-            "HeartDiseaseorAttack": 0, "PhysActivity": 1, "Fruits": 1, "Veggies": 1,
-            "HvyAlcoholConsump": 0, "AnyHealthcare": 1, "NoDocbcCost": 0,
-            "GenHlth": gen_idx, "MentHlth": 0, "PhysHlth": 0,
-            "DiffWalk": int(st.session_state.m_diffwalk),
-            "Sex": 1 if st.session_state.m_sex == "Male" else 0,
-            "Age": age_idx + 1, "Education": 4, "Income": 5,
-        }
+        vals = base_vals(
+            HighBP=int(st.session_state.m_highbp), HighChol=int(st.session_state.m_highchol),
+            BMI=bmi_v, GenHlth=gen_idx, DiffWalk=int(st.session_state.m_diffwalk),
+            Sex=1 if st.session_state.m_sex == "Male" else 0, Age=age_idx + 1)
         _, p_real = real_risk(vals)
 
         syms = list(st.session_state.m_sym)
@@ -198,9 +271,13 @@ with tab_agent:
             "Poor general health": gen_idx >= 4,
             "Difficulty walking": bool(st.session_state.m_diffwalk),
         }
+        if st.session_state.m_spot == CUSTOM:
+            spot = (st.session_state.m_row, st.session_state.m_col)
+        else:
+            spot = st.session_state.m_spot
         st.session_state["mission"] = agent.run_mission(
             st.session_state.m_name, age_idx >= 6, syms, findings, p_real, base_rate,
-            st.session_state.m_spot, grid)
+            spot, grid)
 
     res = st.session_state.get("mission")
     if res:
@@ -248,111 +325,6 @@ with tab_agent:
             else:
                 st.write("No ambulance plan was needed for this patient.")
 
-        st.download_button("⬇️ Download mission report", agent.mission_report(res),
-                           file_name="mediai_mission_report.txt")
-
-# ================================================================ TAB: risk checker
-with tab1:
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        with st.container(border=True):
-            st.subheader("Basic details")
-            age = st.selectbox("Age group", AGE, index=6)
-            sex = st.radio("Sex", ["Female", "Male"], horizontal=True)
-            height = st.number_input("Height (cm)", 120, 220, 168)
-            weight = st.number_input("Weight (kg)", 30, 250, 70)
-            bmi = weight / ((height / 100) ** 2)
-            st.write("Calculated BMI: **%.1f**" % bmi)
-            genhlth = st.selectbox("General health", HEALTH, index=2)
-            edu = st.selectbox("Education level", EDU, index=3)
-            income = st.selectbox("Yearly income band (US dollars, as in the survey)",
-                                  INCOME, index=4)
-
-    with c2:
-        with st.container(border=True):
-            st.subheader("Medical history")
-            highbp = st.checkbox("High blood pressure")
-            highchol = st.checkbox("High cholesterol")
-            cholcheck = st.checkbox("Cholesterol checked in last 5 years", value=True)
-            stroke = st.checkbox("Ever had a stroke")
-            heart = st.checkbox("Heart disease or heart attack")
-            diffwalk = st.checkbox("Serious difficulty walking or climbing stairs")
-            ment = st.slider("Days of poor mental health (last 30)", 0, 30, 0)
-            phys = st.slider("Days of poor physical health (last 30)", 0, 30, 0)
-
-    with c3:
-        with st.container(border=True):
-            st.subheader("Lifestyle and access")
-            smoker = st.checkbox("Smoked 100+ cigarettes in lifetime")
-            physact = st.checkbox("Physical activity in last 30 days", value=True)
-            fruits = st.checkbox("Eats fruit daily", value=True)
-            veggies = st.checkbox("Eats vegetables daily", value=True)
-            alcohol = st.checkbox("Heavy alcohol consumption")
-            healthcare = st.checkbox("Has health coverage", value=True)
-            nodoc = st.checkbox("Could not see a doctor due to cost")
-
-    vals = {
-        "HighBP": int(highbp), "HighChol": int(highchol), "CholCheck": int(cholcheck),
-        "BMI": bmi, "Smoker": int(smoker), "Stroke": int(stroke),
-        "HeartDiseaseorAttack": int(heart), "PhysActivity": int(physact),
-        "Fruits": int(fruits), "Veggies": int(veggies),
-        "HvyAlcoholConsump": int(alcohol), "AnyHealthcare": int(healthcare),
-        "NoDocbcCost": int(nodoc), "GenHlth": HEALTH.index(genhlth) + 1,
-        "MentHlth": ment, "PhysHlth": phys, "DiffWalk": int(diffwalk),
-        "Sex": 1 if sex == "Male" else 0, "Age": AGE.index(age) + 1,
-        "Education": EDU.index(edu) + 1, "Income": INCOME.index(income) + 1,
-    }
-
-    if st.button("Check my risk", type="primary"):
-        missing = [f for f in features if f not in vals]
-        if missing:
-            st.error("Feature names do not match the model: " + ", ".join(missing))
-            st.stop()
-
-        p_model, p_real = real_risk(vals)
-
-        if p_real < base_rate:
-            card("%.0f%% estimated risk" % (p_real * 100),
-                 "Below the population average. The model would not flag this person.",
-                 "#2A9D8F")
-        elif p_real < 0.30:
-            card("%.0f%% estimated risk" % (p_real * 100),
-                 "Above average. A blood sugar test (fasting glucose or HbA1c) is advisable.",
-                 "#F4A261")
-        else:
-            card("%.0f%% estimated risk" % (p_real * 100),
-                 "High risk. Please consult a doctor and get tested soon.", "#E63946")
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Raw model score", "%.0f%%" % (p_model * 100))
-        m2.metric("Estimated real-world risk", "%.0f%%" % (p_real * 100))
-        m3.metric("Population average", "%.1f%%" % (base_rate * 100))
-
-        # what-if: healthier weight
-        if bmi > 25:
-            alt = dict(vals)
-            alt["BMI"] = 24.9
-            _, p_alt = real_risk(alt)
-            st.metric("What if BMI were 24.9 (healthy range)?", "%.0f%%" % (p_alt * 100),
-                      "%+.1f pts" % ((p_alt - p_real) * 100), delta_color="inverse")
-
-        fig, ax = plt.subplots(figsize=(6, 1.8))
-        ax.barh(["Average person", "This patient"], [base_rate * 100, p_real * 100],
-                color=["grey", "crimson" if p_real >= 0.30 else "teal"])
-        ax.set_xlim(0, 100)
-        ax.set_xlabel("Estimated diabetes risk (%)")
-        st.pyplot(fig)
-        plt.close(fig)
-
-    with st.expander("How is this calculated?"):
-        st.write(
-            "A neural network (2 hidden layers: 64 and 32 neurons) was trained on 253,680 "
-            "real survey records from the CDC BRFSS 2015 survey. It was trained on a balanced "
-            "50/50 sample, so its raw score overestimates real risk. We apply Bayes' theorem "
-            "with the real prior (%.1f%% of people are diabetic) to correct it. "
-            "This is a screening aid for learning purposes, not a diagnosis." % (base_rate * 100))
-
 # ================================================================ TAB: routing
 with tab_route:
     st.subheader("Ambulance routing: which search algorithm is best?")
@@ -374,6 +346,22 @@ with tab_route:
         "distance left. **A\\*** adds the time already spent to the distance left "
         "(f = g + h), so it finds the fastest route while exploring far fewer cells than BFS. "
         "This is why the agent uses A* to dispatch the ambulance.")
+
+    st.divider()
+    st.subheader("Every patient location")
+    st.write("The same three algorithms, run from the ambulance base to each of the "
+             "possible patient locations.")
+    png_map, png_charts, loc_df = get_location_analysis()
+    best = int((loc_df["A* min"] <= loc_df[["BFS min", "Greedy min"]].min(axis=1)).sum())
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Locations tested", len(loc_df))
+    q2.metric("A* fastest or tied", "%d of %d" % (best, len(loc_df)))
+    q3.metric("Longest total trip", "%d min" % loc_df["Total ETA (A*)"].max())
+    left, right = st.columns([1, 1.2])
+    left.image(png_map)
+    right.dataframe(loc_df[["No.", "Location", "BFS min", "Greedy min", "A* min",
+                            "Total ETA (A*)"]], hide_index=True)
+    st.image(png_charts)
 
 # ================================================================ TAB: Bayes
 with tab_bayes:
@@ -417,19 +405,40 @@ with tab_bayes:
     st.metric("Final probability", "%.1f%%" % (steps[-1][1] * 100),
               "%+.1f pts vs population" % ((steps[-1][1] - base_rate) * 100),
               delta_color="inverse")
+
+    # how strongly does each finding move the estimate?
+    names = list(agent.EVIDENCE)
+    yy = np.arange(len(names))
+    lr_p = [agent.EVIDENCE[n][0] / agent.EVIDENCE[n][1] for n in names]
+    lr_a = [(1 - agent.EVIDENCE[n][0]) / (1 - agent.EVIDENCE[n][1]) for n in names]
+    fig, ax = plt.subplots(figsize=(9, 3.8))
+    ax.barh(yy + 0.2, lr_p, 0.4, color="crimson", label="Finding present (raises odds)")
+    ax.barh(yy - 0.2, lr_a, 0.4, color="teal", label="Finding absent (lowers odds)")
+    ax.axvline(1, color="black", ls="--", lw=1)
+    ax.set_yticks(yy)
+    ax.set_yticklabels(names)
+    ax.set_xlabel("Likelihood ratio (1 = no effect)")
+    ax.set_title("How strongly each finding moves the Bayes estimate")
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
     with st.expander("Likelihood table (measured on the CDC data)"):
         st.table(pd.DataFrame(
             [(k, v[0], v[1], round(v[0] / v[1], 2)) for k, v in agent.EVIDENCE.items()],
             columns=["Finding", "P(E | diabetic)", "P(E | healthy)", "Likelihood ratio"]))
 
-# ================================================================ TAB: performance
-with tab2:
-    st.subheader("Results on 50,736 unseen patients")
+# ================================================================ TAB: neural network
+with tab_nn:
+    st.subheader("Neural network: results on 50,736 unseen patients")
     a, b, c, d = st.columns(4)
     a.metric("AUC", "0.824")
     b.metric("Accuracy", "70.8%")
     c.metric("Recall (diabetic)", "81%")
     d.metric("Precision (diabetic)", "30%")
+    st.caption("Network: 21 inputs, then 64 neurons, then 32 neurons, then 1 output. "
+               "Trained on a balanced sample; early stopping used.")
     st.write("Of 7,069 diabetic patients in the test set, the model caught **5,712** and missed **1,357**. "
              "For a screening tool, missing fewer sick patients matters more than avoiding false alarms.")
     cm = pd.DataFrame([[30211, 13456], [1357, 5712]],
@@ -443,14 +452,15 @@ with tab2:
         if os.path.exists(fname):
             st.image(fname, caption=caption)
 
-# ================================================================ TAB: team
-with tab3:
-    st.subheader("Project team")
-    st.table(pd.DataFrame({
-        "Name": ["Abhijeet Gorai", "Nilesh Kumar", "Yash Raj"],
-        "Roll number": ["BTECH/10024/24", "BTECH/10054/24", "BTECH/10047/24"],
-    }))
-    st.write("**Program:** B.Tech CSE")
-    st.write("**Subject:** CS24308 Artificial Intelligence Lab | **Session:** MO-26")
-    st.write("**Submitted to:** Dr. Satish Chander")
-    st.write("**Dataset:** CDC Diabetes Health Indicators (UCI repository, 253,680 patients)")
+    st.divider()
+    st.subheader("How the neural network's risk changes")
+    k1, k2, k3, k4 = st.columns(4)
+    sw_age = k1.selectbox("Age group", AGE, index=7, key="sw_age")
+    sw_bmi = k2.slider("BMI", 15, 50, 30, key="sw_bmi")
+    sw_gen = k3.selectbox("General health", HEALTH, index=2, key="sw_gen")
+    sw_bp = k4.checkbox("High blood pressure", key="sw_bp")
+    fig = risk_sweeps(AGE.index(sw_age), sw_bmi, HEALTH.index(sw_gen) + 1, sw_bp)
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption("All other answers use default values. These are patterns in 2015 US survey "
+               "data, not proof of cause.")
