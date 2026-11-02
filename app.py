@@ -174,8 +174,9 @@ with st.sidebar:
 st.title("MediAI: Intelligent Medical Emergency Agent")
 st.caption("CS24308 Artificial Intelligence Lab | Educational project, not medical advice")
 
-tab_agent, tab_route, tab_bayes, tab_nn = st.tabs([
-    "Agent mission", "Search: ambulance routing", "Bayes reasoning", "Neural network"])
+tab_agent, tab_route, tab_bayes, tab_nn, tab_team = st.tabs([
+    "Agent mission", "Search: ambulance routing", "Bayes reasoning", "Neural network",
+    "About the team"])
 
 # ================================================================ TAB: agent mission
 with tab_agent:
@@ -248,36 +249,44 @@ with tab_agent:
     st.caption("Only the fields above are asked. The other 14 health-form answers "
                "(smoking, exercise, diet and so on) use fixed default values.")
 
-    if st.button("Run MediAI agent", type="primary"):
-        age_idx = AGE.index(st.session_state.m_age)
-        gen_idx = HEALTH.index(st.session_state.m_gen) + 1
-        bmi_v = st.session_state.m_bmi
+    FORM_KEYS = ("m_name", "m_age", "m_sex", "m_bmi", "m_gen",
+                 "m_highbp", "m_highchol", "m_diffwalk", "m_sym")
+
+    def mission_from_inputs(p, spot):
+        """Turn one patient's answers into a finished agent mission."""
+        age_idx = AGE.index(p["m_age"])
+        gen_idx = HEALTH.index(p["m_gen"]) + 1
+        bmi_v = p["m_bmi"]
 
         # perceive: build the 21 features the neural network needs
         vals = base_vals(
-            HighBP=int(st.session_state.m_highbp), HighChol=int(st.session_state.m_highchol),
-            BMI=bmi_v, GenHlth=gen_idx, DiffWalk=int(st.session_state.m_diffwalk),
-            Sex=1 if st.session_state.m_sex == "Male" else 0, Age=age_idx + 1)
+            HighBP=int(p["m_highbp"]), HighChol=int(p["m_highchol"]),
+            BMI=bmi_v, GenHlth=gen_idx, DiffWalk=int(p["m_diffwalk"]),
+            Sex=1 if p["m_sex"] == "Male" else 0, Age=age_idx + 1)
         _, p_real = real_risk(vals)
 
-        syms = list(st.session_state.m_sym)
-        if st.session_state.m_highbp:
+        syms = list(p["m_sym"])
+        if p["m_highbp"]:
             syms.append("high_bp")
         findings = {
-            "High blood pressure": bool(st.session_state.m_highbp),
-            "High cholesterol": bool(st.session_state.m_highchol),
+            "High blood pressure": bool(p["m_highbp"]),
+            "High cholesterol": bool(p["m_highchol"]),
             "BMI 30 or more (obese)": bmi_v >= 30,
             "Age 60 or older": age_idx >= 8,
             "Poor general health": gen_idx >= 4,
-            "Difficulty walking": bool(st.session_state.m_diffwalk),
+            "Difficulty walking": bool(p["m_diffwalk"]),
         }
+        return agent.run_mission(p["m_name"], age_idx >= 6, syms, findings,
+                                 p_real, base_rate, spot, grid)
+
+    def chosen_spot():
         if st.session_state.m_spot == CUSTOM:
-            spot = (st.session_state.m_row, st.session_state.m_col)
-        else:
-            spot = st.session_state.m_spot
-        st.session_state["mission"] = agent.run_mission(
-            st.session_state.m_name, age_idx >= 6, syms, findings, p_real, base_rate,
-            spot, grid)
+            return (st.session_state.m_row, st.session_state.m_col)
+        return st.session_state.m_spot
+
+    if st.button("Run MediAI agent", type="primary"):
+        form = {k: st.session_state[k] for k in FORM_KEYS}
+        st.session_state["mission"] = mission_from_inputs(form, chosen_spot())
 
     res = st.session_state.get("mission")
     if res:
@@ -324,6 +333,53 @@ with tab_agent:
                 st.code("\n".join(res["plan_trace"]), language=None)
             else:
                 st.write("No ambulance plan was needed for this patient.")
+
+    # ---------- run all four demo patients at once ----------
+    st.divider()
+    st.subheader("Compare all four demo patients")
+    st.write("One click runs the same agent on all four demo patients, so you can see "
+             "how its decisions differ. Each patient is placed at the location chosen above.")
+    if st.button("Run all 4 demo patients"):
+        st.session_state["batch"] = [
+            mission_from_inputs(p, chosen_spot()) for p in PRESETS.values()]
+
+    batch = st.session_state.get("batch")
+    if batch:
+        table = pd.DataFrame([{
+            "Patient": r["name"],
+            "Triage": r["triage"],
+            "Rules fired": ", ".join(x[0] for x in r["fired"]) or "none",
+            "Neural network risk": "%.0f%%" % (r["nn_risk"] * 100),
+            "Bayes risk": "%.0f%%" % (r["bayes_risk"] * 100),
+            "Ambulance": ("%d min" % r["route"]["minutes"]) if r["dispatch"] else "not needed",
+        } for r in batch])
+        st.dataframe(table, hide_index=True)
+
+        labels = ["A", "B", "C", "D"]
+        fig, (b1, b2) = plt.subplots(1, 2, figsize=(12, 3.8))
+        xx = np.arange(len(batch))
+        b1.bar(xx - 0.2, [r["nn_risk"] * 100 for r in batch], 0.4, color="teal",
+               label="Neural network")
+        b1.bar(xx + 0.2, [r["bayes_risk"] * 100 for r in batch], 0.4, color="purple",
+               label="Bayes")
+        b1.axhline(base_rate * 100, color="grey", ls="--", label="Average person")
+        b1.set_xticks(xx)
+        b1.set_xticklabels(labels)
+        b1.set_ylabel("Estimated diabetes risk (%)")
+        b1.set_title("Diabetes risk by patient")
+        b1.legend(fontsize=8)
+        b2.bar(xx, [len(r["fired"]) for r in batch], color=[r["colour"] for r in batch])
+        for i, r in enumerate(batch):
+            b2.text(i, len(r["fired"]) + 0.08, r["triage"], ha="center", fontweight="bold")
+        b2.set_xticks(xx)
+        b2.set_xticklabels(labels)
+        b2.set_ylabel("Rules fired")
+        b2.set_ylim(0, max(len(r["fired"]) for r in batch) + 1)
+        b2.set_title("Rules fired and triage colour")
+        fig.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+        st.caption("A = chest pain, B = diabetes signs, C = fever with rash, D = headache.")
 
 # ================================================================ TAB: routing
 with tab_route:
@@ -464,3 +520,16 @@ with tab_nn:
     plt.close(fig)
     st.caption("All other answers use default values. These are patterns in 2015 US survey "
                "data, not proof of cause.")
+
+# ================================================================ TAB: team
+with tab_team:
+    st.subheader("Project team")
+    st.table(pd.DataFrame({
+        "Name": ["Abhijeet Gorai", "Nilesh Kumar", "Yash Raj"],
+        "Roll number": ["BTECH/10024/24", "BTECH/10054/24", "BTECH/10047/24"],
+    }))
+    st.write("**Institute:** Birla Institute of Technology, Mesra, Ranchi")
+    st.write("**Program:** B.Tech CSE, Semester 5, Section A")
+    st.write("**Subject:** CS24308 Artificial Intelligence Lab | **Session:** MO-26")
+    st.write("**Submitted to:** Dr. Satish Chander")
+    st.write("**Dataset:** CDC Diabetes Health Indicators (UCI repository, 253,680 patients)")
