@@ -7,7 +7,7 @@ Module IV  : Bayesian reasoning + goal-stack planning
 Module V   : Learning (neural network, loaded in app.py)
 """
 import heapq
-from collections import deque
+from collections import deque   
 
 import numpy as np
 import pandas as pd
